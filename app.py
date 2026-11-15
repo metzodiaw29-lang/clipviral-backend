@@ -1,4 +1,4 @@
-import os, re, glob, shutil, tempfile, subprocess
+import os, re, glob, shutil, tempfile, subprocess, textwrap
 from flask import Flask, request, jsonify, send_file, after_this_request
 from flask_cors import CORS
 import yt_dlp
@@ -8,6 +8,7 @@ app = Flask(__name__)
 CORS(app)
 
 SECRET_COOKIES = "/etc/secrets/cookies.txt"
+FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 def to_seconds(v):
     s = str(v).strip()
@@ -20,19 +21,28 @@ def to_seconds(v):
         return p[0] * 3600 + p[1] * 60 + p[2]
     raise ValueError("Format de temps invalide")
 
+def wrap_title(title):
+    t = re.sub(r"\s+", " ", str(title or "")).strip()[:70]
+    if not t:
+        return None
+    lines = textwrap.wrap(t, width=22)[:3]
+    return "\n".join(lines)
+
 @app.route("/")
 def home():
     return jsonify({
         "service": "ClipViral backend",
         "status": "online",
         "cookies": os.path.exists(SECRET_COOKIES),
+        "font": os.path.exists(FONT),
     })
 
 @app.route("/api/clip", methods=["POST"])
 def clip():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
-    mode = str(data.get("crop_mode") or "fit").lower()
+    mode = str(data.get("crop_mode") or "zoom").lower()
+    title = wrap_title(data.get("title"))
     try:
         start = to_seconds(data.get("start_time"))
         end = to_seconds(data.get("end_time"))
@@ -83,13 +93,27 @@ def clip():
     if mode == "crop":
         vf = ["-vf", "crop=ih*9/16:ih,scale=480:854"]
     else:
-        vf = [
-            "-filter_complex",
+        if mode == "fit":
+            fg = "[b]scale=480:-2[fg]"
+        else:
+            fg = "[b]crop=w='min(iw,ih*1.22)':h=ih,scale=480:394[fg]"
+        graph = (
             "[0:v]split[a][b];"
-            "[a]scale=48:86,scale=480:854:flags=bilinear,boxblur=6[bg];"
-            "[b]scale=480:-2[fg];"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2",
-        ]
+            "[a]crop=w='min(iw,ih*9/16)':h=ih,scale=48:86,scale=480:854:flags=bilinear,boxblur=6[bg];"
+            + fg + ";"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2"
+        )
+        if title and os.path.exists(FONT):
+            tfile = os.path.join(tmp, "title.txt")
+            with open(tfile, "w", encoding="utf-8") as f:
+                f.write(title)
+            graph += (
+                "[v];[v]drawtext=fontfile=" + FONT +
+                ":textfile=" + tfile +
+                ":fontsize=26:fontcolor=black:box=1:boxcolor=white@0.95"
+                ":boxborderw=14:line_spacing=6:x=(w-text_w)/2:y=70"
+            )
+        vf = ["-filter_complex", graph]
 
     cmd = [
         "ffmpeg", "-y", "-i", files[0],
