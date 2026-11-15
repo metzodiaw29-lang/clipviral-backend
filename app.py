@@ -32,6 +32,7 @@ def home():
 def clip():
     data = request.get_json(silent=True) or {}
     url = data.get("url")
+    mode = str(data.get("crop_mode") or "fit").lower()
     try:
         start = to_seconds(data.get("start_time"))
         end = to_seconds(data.get("end_time"))
@@ -78,9 +79,21 @@ def clip():
         return jsonify({"error": "Aucun fichier téléchargé."}), 500
 
     out = os.path.join(tmp, "clip.mp4")
+
+    if mode == "crop":
+        vf = ["-vf", "crop=ih*9/16:ih,scale=480:854"]
+    else:
+        vf = [
+            "-filter_complex",
+            "[0:v]split[a][b];"
+            "[a]scale=48:86,scale=480:854:flags=bilinear,boxblur=6[bg];"
+            "[b]scale=480:-2[fg];"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2",
+        ]
+
     cmd = [
         "ffmpeg", "-y", "-i", files[0],
-        "-vf", "crop=ih*9/16:ih,scale=480:854",
+        *vf,
         "-r", "30",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
         "-threads", "1",
