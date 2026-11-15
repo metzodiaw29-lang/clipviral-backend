@@ -7,6 +7,8 @@ from yt_dlp.utils import download_range_func
 app = Flask(__name__)
 CORS(app)
 
+SECRET_COOKIES = "/etc/secrets/cookies.txt"
+
 def to_seconds(v):
     s = str(v).strip()
     if re.fullmatch(r"\d+(\.\d+)?", s):
@@ -20,7 +22,11 @@ def to_seconds(v):
 
 @app.route("/")
 def home():
-    return jsonify({"service": "ClipViral backend", "status": "online"})
+    return jsonify({
+        "service": "ClipViral backend",
+        "status": "online",
+        "cookies": os.path.exists(SECRET_COOKIES),
+    })
 
 @app.route("/api/clip", methods=["POST"])
 def clip():
@@ -54,6 +60,12 @@ def clip():
         "noplaylist": True,
         "quiet": True,
     }
+
+    if os.path.exists(SECRET_COOKIES):
+        local_cookies = os.path.join(tmp, "cookies.txt")
+        shutil.copy(SECRET_COOKIES, local_cookies)
+        opts["cookiefile"] = local_cookies
+
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
