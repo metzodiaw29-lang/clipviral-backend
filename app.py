@@ -41,8 +41,8 @@ def clip():
         return jsonify({"error": "Lien YouTube manquant."}), 400
     if end <= start:
         return jsonify({"error": "La fin doit être après le début."}), 400
-    if end - start > 180:
-        return jsonify({"error": "Clip trop long (3 minutes maximum)."}), 400
+    if end - start > 90:
+        return jsonify({"error": "Clip trop long (90 secondes maximum)."}), 400
 
     tmp = tempfile.mkdtemp(prefix="clipviral_")
 
@@ -52,13 +52,14 @@ def clip():
         return response
 
     opts = {
-        "format": "bv*[height<=720]+ba/b[height<=720]/b",
+        "format": "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best",
         "outtmpl": os.path.join(tmp, "raw.%(ext)s"),
         "download_ranges": download_range_func(None, [(start, end)]),
-        "force_keyframes_at_cuts": True,
+        "force_keyframes_at_cuts": False,
         "merge_output_format": "mp4",
         "noplaylist": True,
         "quiet": True,
+        "socket_timeout": 30,
     }
 
     if os.path.exists(SECRET_COOKIES):
@@ -79,12 +80,17 @@ def clip():
     out = os.path.join(tmp, "clip.mp4")
     cmd = [
         "ffmpeg", "-y", "-i", files[0],
-        "-vf", "crop=ih*9/16:ih,scale=720:1280",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-        "-c:a", "aac", "-b:a", "128k",
+        "-vf", "crop=ih*9/16:ih,scale=480:854",
+        "-r", "30",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+        "-threads", "1",
+        "-c:a", "aac", "-b:a", "96k",
         "-movflags", "+faststart", out,
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=420)
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Le recadrage a pris trop de temps."}), 504
     if r.returncode != 0 or not os.path.exists(out):
         return jsonify({"error": "Échec du recadrage : " + r.stderr[-300:]}), 500
 
