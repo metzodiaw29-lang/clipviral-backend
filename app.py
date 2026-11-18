@@ -28,6 +28,59 @@ def wrap_title(title):
     lines = textwrap.wrap(t, width=22)[:3]
     return "\n".join(lines)
 
+def ass_time(t):
+    t = max(0.0, float(t))
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
+    return "%d:%02d:%05.2f" % (h, m, s)
+
+def clean_subs(raw, offset, max_len):
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for it in raw[:80]:
+        try:
+            a = float(it.get("start")) + offset
+            b = float(it.get("end")) + offset
+            txt = re.sub(r"\s+", " ", str(it.get("text") or "")).strip()
+        except Exception:
+            continue
+        if not txt or b <= 0:
+            continue
+        a = max(0.0, a)
+        if b <= a:
+            b = a + 1.5
+        if a >= max_len:
+            continue
+        b = min(b, max_len)
+        out.append((a, b, txt[:90]))
+    return out
+
+def build_ass(subs, mode, path):
+    margin = {"crop": 150, "fit": 300}.get(mode, 235)
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 480",
+        "PlayResY: 854",
+        "WrapStyle: 0",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,DejaVu Sans,22,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2.5,1,2,30,30,%d,1" % margin,
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for a, b, txt in subs:
+        wrapped = textwrap.wrap(txt.replace("{", "(").replace("}", ")"), width=30)[:2]
+        if not wrapped:
+            continue
+        lines.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (ass_time(a), ass_time(b), "\\N".join(wrapped)))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
 @app.route("/")
 def home():
     return jsonify({
@@ -35,6 +88,7 @@ def home():
         "status": "online",
         "cookies": os.path.exists(SECRET_COOKIES),
         "font": os.path.exists(FONT),
+        "subtitles": True,
     })
 
 @app.route("/api/clip", methods=["POST"])
@@ -54,6 +108,14 @@ def clip():
         return jsonify({"error": "La fin doit être après le début."}), 400
     if end - start > 90:
         return jsonify({"error": "Clip trop long (90 secondes maximum)."}), 400
+
+    try:
+        sub_offset = float(data.get("sub_offset") or 0)
+    except Exception:
+        sub_offset = 0.0
+    subs = clean_subs(data.get("subtitles"), sub_offset, end - start)
+    if mode == "crop":
+        subs = []
 
     tmp = tempfile.mkdtemp(prefix="clipviral_")
 
@@ -90,6 +152,11 @@ def clip():
 
     out = os.path.join(tmp, "clip.mp4")
 
+    subs_file = None
+    if subs:
+        subs_file = os.path.join(tmp, "subs.ass")
+        build_ass(subs, mode, subs_file)
+
     if mode == "crop":
         vf = ["-vf", "crop=ih*9/16:ih,scale=480:854"]
     else:
@@ -101,18 +168,24 @@ def clip():
             "[0:v]split[a][b];"
             "[a]crop=w='min(iw,ih*9/16)':h=ih,scale=48:86,scale=480:854:flags=bilinear,boxblur=6[bg];"
             + fg + ";"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2"
+            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]"
         )
+        chain = []
         if title and os.path.exists(FONT):
             tfile = os.path.join(tmp, "title.txt")
             with open(tfile, "w", encoding="utf-8") as f:
                 f.write(title)
-            graph += (
-                "[v];[v]drawtext=fontfile=" + FONT +
+            chain.append(
+                "drawtext=fontfile=" + FONT +
                 ":textfile=" + tfile +
                 ":fontsize=26:fontcolor=black:box=1:boxcolor=white@0.95"
                 ":boxborderw=14:line_spacing=6:x=(w-text_w)/2:y=70"
             )
+        if subs_file:
+            chain.append("ass=filename=" + subs_file)
+        if not chain:
+            chain.append("null")
+        graph += ";[v0]" + ",".join(chain)
         vf = ["-filter_complex", graph]
 
     cmd = [
