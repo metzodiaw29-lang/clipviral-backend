@@ -1,210 +1,206 @@
-import os, re, glob, shutil, tempfile, subprocess, textwrap
-from flask import Flask, request, jsonify, send_file, after_this_request
-from flask_cors import CORS
-import yt_dlp
-from yt_dlp.utils import download_range_func
+import io
+import os
+import subprocess
+import tempfile
+from flask import Flask, jsonify, request, send_file
 
 app = Flask(__name__)
-CORS(app)
 
-SECRET_COOKIES = "/etc/secrets/cookies.txt"
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIES_PATH = os.path.join(BASE_DIR, "cookies.txt")
+FONT_PATH = os.path.join(BASE_DIR, "font.ttf")
 
-def to_seconds(v):
-    s = str(v).strip()
-    if re.fullmatch(r"\d+(\.\d+)?", s):
-        return float(s)
-    p = [float(x) for x in s.split(":")]
-    if len(p) == 2:
-        return p[0] * 60 + p[1]
-    if len(p) == 3:
-        return p[0] * 3600 + p[1] * 60 + p[2]
-    raise ValueError("Format de temps invalide")
 
-def wrap_title(title):
-    t = re.sub(r"\s+", " ", str(title or "")).strip()[:70]
-    if not t:
-        return None
-    lines = textwrap.wrap(t, width=22)[:3]
-    return "\n".join(lines)
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
 
-def ass_time(t):
-    t = max(0.0, float(t))
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = t % 60
-    return "%d:%02d:%05.2f" % (h, m, s)
 
-def clean_subs(raw, offset, max_len):
-    out = []
-    if not isinstance(raw, list):
-        return out
-    for it in raw[:80]:
+def format_ass_time(seconds: float) -> str:
+    total_cs = max(0, int(round(float(seconds) * 100)))
+    cs = total_cs % 100
+    total_s = total_cs // 100
+    s = total_s % 60
+    total_m = total_s // 60
+    m = total_m % 60
+    h = total_m // 60
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def build_ass_subtitles(subtitles: list, sub_offset: float = 0.0) -> str:
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 480
+PlayResY: 854
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.5,1,2,28,28,90,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+    for item in subtitles:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
         try:
-            a = float(it.get("start")) + offset
-            b = float(it.get("end")) + offset
-            txt = re.sub(r"\s+", " ", str(it.get("text") or "")).strip()
-        except Exception:
+            start = max(0.0, float(item.get("start", 0)) + float(sub_offset))
+            end = max(start + 0.1, float(item.get("end", 0)) + float(sub_offset))
+        except (TypeError, ValueError):
             continue
-        if not txt or b <= 0:
-            continue
-        a = max(0.0, a)
-        if b <= a:
-            b = a + 1.5
-        if a >= max_len:
-            continue
-        b = min(b, max_len)
-        out.append((a, b, txt[:90]))
-    return out
 
-def build_ass(subs, mode, path):
-    margin = {"crop": 150, "fit": 300}.get(mode, 235)
-    lines = [
-        "[Script Info]",
-        "ScriptType: v4.00+",
-        "PlayResX: 480",
-        "PlayResY: 854",
-        "WrapStyle: 0",
-        "",
-        "[V4+ Styles]",
-        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: Default,DejaVu Sans,22,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,2.5,1,2,30,30,%d,1" % margin,
-        "",
-        "[Events]",
-        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
-    ]
-    for a, b, txt in subs:
-        wrapped = textwrap.wrap(txt.replace("{", "(").replace("}", ")"), width=30)[:2]
-        if not wrapped:
-            continue
-        lines.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (ass_time(a), ass_time(b), "\\N".join(wrapped)))
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        safe_text = (
+            text.replace("\\", "\\\\")
+            .replace("{", "(")
+            .replace("}", ")")
+            .replace("\n", "\\N")
+        )
+        lines.append(
+            f"Dialogue: 0,{format_ass_time(start)},{format_ass_time(end)},Default,,0,0,0,,{safe_text}\n"
+        )
+    return "".join(lines)
 
-@app.route("/")
-def home():
+
+def escape_ffmpeg_path(path: str) -> str:
+    return path.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+
+
+@app.route("/", methods=["GET"])
+def health():
     return jsonify({
         "service": "ClipViral backend",
         "status": "online",
-        "cookies": os.path.exists(SECRET_COOKIES),
-        "font": os.path.exists(FONT),
+        "cookies": os.path.exists(COOKIES_PATH),
+        "font": os.path.exists(FONT_PATH),
         "subtitles": True,
     })
 
-@app.route("/api/clip", methods=["POST"])
-def clip():
+
+@app.route("/api/clip", methods=["POST", "OPTIONS"])
+def create_clip():
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     data = request.get_json(silent=True) or {}
-    url = data.get("url")
-    mode = str(data.get("crop_mode") or "zoom").lower()
-    title = wrap_title(data.get("title"))
-    try:
-        start = to_seconds(data.get("start_time"))
-        end = to_seconds(data.get("end_time"))
-    except Exception:
-        return jsonify({"error": "Temps de début ou de fin invalide."}), 400
-    if not url:
+    youtube_url = str(data.get("url", "")).strip()
+    if not youtube_url:
         return jsonify({"error": "Lien YouTube manquant."}), 400
-    if end <= start:
-        return jsonify({"error": "La fin doit être après le début."}), 400
-    if end - start > 90:
-        return jsonify({"error": "Clip trop long (90 secondes maximum)."}), 400
 
     try:
-        sub_offset = float(data.get("sub_offset") or 0)
-    except Exception:
+        start_time = float(data.get("start_time", 0))
+        end_time = float(data.get("end_time", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "Paramètres start_time ou end_time invalides."}), 400
+
+    duration = end_time - start_time
+    if start_time < 0 or duration <= 0:
+        return jsonify({"error": "Plage temporelle invalide (end_time doit être supérieur à start_time)."}), 400
+
+    # Lit le paramètre "format" en priorité (avec repli sur "crop_mode")
+    raw_format = str(data.get("format") or data.get("crop_mode") or "zoom").strip().lower()
+    clip_format = "crop" if raw_format in ("crop", "fullscreen", "plein_ecran") else "zoom"
+
+    subtitles = data.get("subtitles") if isinstance(data.get("subtitles"), list) else []
+    try:
+        sub_offset = float(data.get("sub_offset", 0) or 0)
+    except (TypeError, ValueError):
         sub_offset = 0.0
-    subs = clean_subs(data.get("subtitles"), sub_offset, end - start)
-    if mode == "crop":
-        subs = []
 
-    tmp = tempfile.mkdtemp(prefix="clipviral_")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_path = os.path.join(tmpdir, "source.mp4")
+        output_path = os.path.join(tmpdir, "output.mp4")
+        ass_path = os.path.join(tmpdir, "subs.ass")
 
-    @after_this_request
-    def cleanup(response):
-        shutil.rmtree(tmp, ignore_errors=True)
-        return response
+        yt_cmd = [
+            "yt-dlp",
+            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+            "--merge-output-format", "mp4",
+            "-o", source_path,
+        ]
+        if os.path.exists(COOKIES_PATH):
+            yt_cmd.extend(["--cookies", COOKIES_PATH])
+        yt_cmd.append(youtube_url)
 
-    opts = {
-        "format": "bv*[height<=480]+ba/b[height<=480]/bv*+ba/b/best",
-        "outtmpl": os.path.join(tmp, "raw.%(ext)s"),
-        "download_ranges": download_range_func(None, [(start, end)]),
-        "force_keyframes_at_cuts": False,
-        "merge_output_format": "mp4",
-        "noplaylist": True,
-        "quiet": True,
-        "socket_timeout": 30,
-    }
+        yt_proc = subprocess.run(yt_cmd, capture_output=True, text=True)
+        if yt_proc.returncode != 0 or not os.path.exists(source_path):
+            err_msg = (yt_proc.stderr or yt_proc.stdout or "Échec yt-dlp").strip()
+            return jsonify({"error": f"Téléchargement impossible : {err_msg}"}), 500
 
-    if os.path.exists(SECRET_COOKIES):
-        local_cookies = os.path.join(tmp, "cookies.txt")
-        shutil.copy(SECRET_COOKIES, local_cookies)
-        opts["cookiefile"] = local_cookies
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
-    except Exception as e:
-        return jsonify({"error": "Téléchargement impossible : " + str(e)[:300]}), 502
-
-    files = glob.glob(os.path.join(tmp, "raw.*"))
-    if not files:
-        return jsonify({"error": "Aucun fichier téléchargé."}), 500
-
-    out = os.path.join(tmp, "clip.mp4")
-
-    subs_file = None
-    if subs:
-        subs_file = os.path.join(tmp, "subs.ass")
-        build_ass(subs, mode, subs_file)
-
-    if mode == "crop":
-        vf = ["-vf", "crop=ih*9/16:ih,scale=480:854"]
-    else:
-        if mode == "fit":
-            fg = "[b]scale=480:-2[fg]"
-        else:
-            fg = "[b]crop=w='min(iw,ih*1.22)':h=ih,scale=480:394[fg]"
-        graph = (
-            "[0:v]split[a][b];"
-            "[a]crop=w='min(iw,ih*9/16)':h=ih,scale=48:86,scale=480:854:flags=bilinear,boxblur=6[bg];"
-            + fg + ";"
-            "[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]"
-        )
-        chain = []
-        if title and os.path.exists(FONT):
-            tfile = os.path.join(tmp, "title.txt")
-            with open(tfile, "w", encoding="utf-8") as f:
-                f.write(title)
-            chain.append(
-                "drawtext=fontfile=" + FONT +
-                ":textfile=" + tfile +
-                ":fontsize=26:fontcolor=black:box=1:boxcolor=white@0.95"
-                ":boxborderw=14:line_spacing=6:x=(w-text_w)/2:y=70"
+        # Aucun titre n'est jamais incrusté
+        if clip_format == "crop":
+            # 2) Plein écran : vidéo plein écran 9:16 (480x854), sans titre ni sous-titres
+            filter_complex = (
+                "[0:v]scale=480:854:force_original_aspect_ratio=increase,"
+                "crop=480:854,setsar=1[vout]"
             )
-        if subs_file:
-            chain.append("ass=filename=" + subs_file)
-        if not chain:
-            chain.append("null")
-        graph += ";[v0]" + ",".join(chain)
-        vf = ["-filter_complex", graph]
+        else:
+            # 1) Zoom : vidéo zoomée au centre sur fond flou 9:16 (480x854), sans titre
+            has_subs = len(subtitles) > 0
+            if has_subs:
+                with open(ass_path, "w", encoding="utf-8") as f:
+                    f.write(build_ass_subtitles(subtitles, sub_offset))
+                escaped_ass = escape_ffmpeg_path(ass_path)
+                filter_complex = (
+                    "[0:v]split=2[bg][fg];"
+                    "[bg]scale=480:854:force_original_aspect_ratio=increase,"
+                    "crop=480:854,boxblur=20:5[bg_blur];"
+                    "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
+                    "scale=480:-2[fg_zoom];"
+                    "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,"
+                    f"subtitles='{escaped_ass}',setsar=1[vout]"
+                )
+            else:
+                filter_complex = (
+                    "[0:v]split=2[bg][fg];"
+                    "[bg]scale=480:854:force_original_aspect_ratio=increase,"
+                    "crop=480:854,boxblur=20:5[bg_blur];"
+                    "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
+                    "scale=480:-2[fg_zoom];"
+                    "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]"
+                )
 
-    cmd = [
-        "ffmpeg", "-y", "-i", files[0],
-        *vf,
-        "-r", "30",
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
-        "-threads", "1",
-        "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart", out,
-    ]
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=420)
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Le recadrage a pris trop de temps."}), 504
-    if r.returncode != 0 or not os.path.exists(out):
-        return jsonify({"error": "Échec du recadrage : " + r.stderr[-300:]}), 500
+        ff_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start_time),
+            "-i", source_path,
+            "-t", str(duration),
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",
+            "-map", "0:a?",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            output_path,
+        ]
 
-    return send_file(out, mimetype="video/mp4", as_attachment=True, download_name="clip.mp4")
+        ff_proc = subprocess.run(ff_cmd, capture_output=True, text=True)
+        if ff_proc.returncode != 0 or not os.path.exists(output_path):
+            err_msg = (ff_proc.stderr or "Erreur ffmpeg").strip()
+            return jsonify({"error": f"Erreur découpe FFmpeg : {err_msg[-800:]}"}), 500
+
+        with open(output_path, "rb") as f:
+            mp4_bytes = f.read()
+
+    return send_file(
+        io.BytesIO(mp4_bytes),
+        mimetype="video/mp4",
+        as_attachment=True,
+        download_name="clip.mp4",
+    )
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
