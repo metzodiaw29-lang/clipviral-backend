@@ -142,6 +142,23 @@ def create_clip():
         out_path = os.path.join(tmpdir, "clip_9x16.mp4")
         ass_path = os.path.join(tmpdir, "subtitles.ass")
 
+        local_cookies_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "cookies.txt"
+        )
+        source_cookies_path = None
+        if os.path.isfile(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
+            source_cookies_path = COOKIES_PATH
+        elif os.path.isfile(local_cookies_path) and os.path.getsize(local_cookies_path) > 0:
+            source_cookies_path = local_cookies_path
+
+        tmp_cookies_path = None
+        if source_cookies_path:
+            tmp_cookies_path = os.path.join(tmpdir, "cookies.txt")
+            with open(source_cookies_path, "rb") as src_f:
+                cookies_content = src_f.read()
+            with open(tmp_cookies_path, "wb") as dst_f:
+                dst_f.write(cookies_content)
+
         yt_base_cmd = [
             "yt-dlp",
             "--no-playlist",
@@ -150,10 +167,8 @@ def create_clip():
             "--merge-output-format",
             "mp4",
         ]
-        if os.path.isfile(COOKIES_PATH) and os.path.getsize(COOKIES_PATH) > 0:
-            yt_base_cmd.extend(["--cookies", COOKIES_PATH])
-        elif os.path.isfile("cookies.txt") and os.path.getsize("cookies.txt") > 0:
-            yt_base_cmd.extend(["--cookies", "cookies.txt"])
+        if tmp_cookies_path:
+            yt_base_cmd.extend(["--cookies", tmp_cookies_path])
 
         yt_section_cmd = yt_base_cmd + [
             "--download-sections",
