@@ -120,10 +120,9 @@ def create_clip():
         output_path = os.path.join(tmpdir, "output.mp4")
         ass_path = os.path.join(tmpdir, "subs.ass")
 
-        # yt-dlp : meilleure qualité disponible jusqu'à 720p maximum
         yt_cmd = [
             "yt-dlp",
-            "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720][ext=mp4]/b[height<=720]",
+            "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]",
             "--merge-output-format", "mp4",
             "-o", source_path,
         ]
@@ -138,37 +137,34 @@ def create_clip():
 
         # Aucun titre n'est jamais incrusté
         if clip_format == "crop":
-            # 2) Plein écran : vidéo plein écran 9:16 en 720x1280, sans titre ni sous-titres
+            # 2) Plein écran : vidéo plein écran 9:16 (720x1280), sans titre ni sous-titres
             filter_complex = (
                 "[0:v]scale=720:1280:force_original_aspect_ratio=increase,"
                 "crop=720:1280,setsar=1[vout]"
             )
         else:
-            # 1) Zoom : fond flou calculé en petit (90x160 + boxblur=5:1) puis agrandi en 720x1280
-            bg_chain = (
-                "[bg]scale=90:160:force_original_aspect_ratio=increase,"
-                "crop=90:160,boxblur=5:1,scale=720:1280[bg_blur];"
-            )
-            fg_chain = (
-                "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
-                "scale=720:-2[fg_zoom];"
-            )
-            if len(subtitles) > 0:
+            # 1) Zoom : vidéo zoomée au centre sur fond flou 9:16 (720x1280), sans titre
+            has_subs = len(subtitles) > 0
+            if has_subs:
                 with open(ass_path, "w", encoding="utf-8") as f:
                     f.write(build_ass_subtitles(subtitles, sub_offset))
                 escaped_ass = escape_ffmpeg_path(ass_path)
                 filter_complex = (
                     "[0:v]split=2[bg][fg];"
-                    f"{bg_chain}"
-                    f"{fg_chain}"
+                    "[bg]scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280,boxblur=20:5[bg_blur];"
+                    "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
+                    "scale=720:-2[fg_zoom];"
                     "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,"
                     f"subtitles='{escaped_ass}',setsar=1[vout]"
                 )
             else:
                 filter_complex = (
                     "[0:v]split=2[bg][fg];"
-                    f"{bg_chain}"
-                    f"{fg_chain}"
+                    "[bg]scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280,boxblur=20:5[bg_blur];"
+                    "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
+                    "scale=720:-2[fg_zoom];"
                     "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]"
                 )
 
@@ -181,10 +177,8 @@ def create_clip():
             "-map", "[vout]",
             "-map", "0:a?",
             "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "28",
-            "-r", "30",
-            "-threads", "2",
+            "-preset", "veryfast",
+            "-crf", "23",
             "-c:a", "aac",
             "-b:a", "128k",
             "-movflags", "+faststart",
