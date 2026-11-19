@@ -33,14 +33,14 @@ def format_ass_time(seconds: float) -> str:
 def build_ass_subtitles(subtitles: list, sub_offset: float = 0.0) -> str:
     header = """[Script Info]
 ScriptType: v4.00+
-PlayResX: 480
-PlayResY: 854
+PlayResX: 720
+PlayResY: 1280
 WrapStyle: 2
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2.5,1,2,28,28,90,1
+Style: Default,Arial,36,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3.8,1.5,2,42,42,135,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -122,7 +122,7 @@ def create_clip():
 
         yt_cmd = [
             "yt-dlp",
-            "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
+            "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080][ext=mp4]/b[height<=1080]",
             "--merge-output-format", "mp4",
             "-o", source_path,
         ]
@@ -137,13 +137,13 @@ def create_clip():
 
         # Aucun titre n'est jamais incrusté
         if clip_format == "crop":
-            # 2) Plein écran : vidéo plein écran 9:16 (480x854), sans titre ni sous-titres
+            # 2) Plein écran : vidéo plein écran 9:16 (720x1280), sans titre ni sous-titres
             filter_complex = (
-                "[0:v]scale=480:854:force_original_aspect_ratio=increase,"
-                "crop=480:854,setsar=1[vout]"
+                "[0:v]scale=720:1280:force_original_aspect_ratio=increase,"
+                "crop=720:1280,setsar=1[vout]"
             )
         else:
-            # 1) Zoom : vidéo zoomée au centre sur fond flou 9:16 (480x854), sans titre
+            # 1) Zoom : vidéo zoomée au centre sur fond flou 9:16 (720x1280), sans titre
             has_subs = len(subtitles) > 0
             if has_subs:
                 with open(ass_path, "w", encoding="utf-8") as f:
@@ -151,20 +151,20 @@ def create_clip():
                 escaped_ass = escape_ffmpeg_path(ass_path)
                 filter_complex = (
                     "[0:v]split=2[bg][fg];"
-                    "[bg]scale=480:854:force_original_aspect_ratio=increase,"
-                    "crop=480:854,boxblur=20:5[bg_blur];"
+                    "[bg]scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280,boxblur=20:5[bg_blur];"
                     "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
-                    "scale=480:-2[fg_zoom];"
+                    "scale=720:-2[fg_zoom];"
                     "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,"
                     f"subtitles='{escaped_ass}',setsar=1[vout]"
                 )
             else:
                 filter_complex = (
                     "[0:v]split=2[bg][fg];"
-                    "[bg]scale=480:854:force_original_aspect_ratio=increase,"
-                    "crop=480:854,boxblur=20:5[bg_blur];"
+                    "[bg]scale=720:1280:force_original_aspect_ratio=increase,"
+                    "crop=720:1280,boxblur=20:5[bg_blur];"
                     "[fg]crop=iw*0.85:ih*0.85:(iw-iw*0.85)/2:(ih-ih*0.85)/2,"
-                    "scale=480:-2[fg_zoom];"
+                    "scale=720:-2[fg_zoom];"
                     "[bg_blur][fg_zoom]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]"
                 )
 
