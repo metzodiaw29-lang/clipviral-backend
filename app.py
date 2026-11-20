@@ -193,7 +193,7 @@ def create_clip():
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=240,
+                    timeout=200,
                 )
             except subprocess.TimeoutExpired:
                 return jsonify({"error": "Téléchargement trop long"}), 500
@@ -212,7 +212,7 @@ def create_clip():
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
-                        timeout=240,
+                        timeout=200,
                     )
                 except subprocess.TimeoutExpired:
                     return jsonify({"error": "Téléchargement trop long"}), 500
@@ -229,6 +229,7 @@ def create_clip():
 
             # Aucun titre n'est jamais incrusté.
             # Sous-titres autorisés uniquement pour le format "zoom".
+            has_ass = False
             if clip_format == "bars":
                 filter_complex = "[0:v]scale=720:-2,pad=720:1280:(ow-iw)/2:(oh-ih)/2:black,setsar=1[vout]"
             elif clip_format == "crop":
@@ -254,6 +255,9 @@ def create_clip():
                 else:
                     filter_complex = f"{base_zoom}[vout]"
 
+            fps_value = "24" if has_ass else "30"
+            crf_value = "30" if has_ass else "28"
+
             ff_cmd = [
                 "ffmpeg",
                 "-y",
@@ -274,9 +278,9 @@ def create_clip():
                 "-preset",
                 "ultrafast",
                 "-crf",
-                "28",
+                crf_value,
                 "-r",
-                "30",
+                fps_value,
                 "-threads",
                 "2",
                 "-pix_fmt",
@@ -297,7 +301,7 @@ def create_clip():
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    timeout=240,
+                    timeout=360,
                 )
             except subprocess.TimeoutExpired:
                 return jsonify({"error": "Découpe trop longue"}), 500
